@@ -1,41 +1,37 @@
 """
 Code to load equation data in a unified way, as DGLGraphs.
 
-Each example is a directed DGLGraph, with the following int32 node data fields:
+Each example is a directed DGLGraph, with the following int64 node data fields:
  - FUNCTION_FIELD: Indicates the type of function applied at this node. Leaf nodes
         (which represent atoms) have function type LEAF_FUNCTION.
  - TOKEN_FIELD: For leaf nodes, which token is present at that index.
         Function nodes (internal nodes) have value NONLEAF_TOKEN.
- - INPUT_IDX_FIELD: Indicates which child of the parent node this node is.
-        For binary trees, the indices are LEFT_INPUT_IDX = 0 and RIGHT_INPUT_IDX = 1.
-        Root nodes have input index ROOT_INPUT_IDX = -1.
 
 Graphs are batched by combining them into one larger disconnected graph via dgl.batch().
 This enables greater parallelism when traversing the nodes by type.
 """
 
 import itertools as it
-import logging
 import json
+import logging
 from typing import Dict, List, Optional, Set, Tuple
 
+import dgl
 import matplotlib.pyplot as plt
 import networkx as nx
 import pytorch_lightning as pl
 import torch
 
-import dgl
 
 FUNCTION_FIELD = "function"
 TOKEN_FIELD = "token"
-INPUT_IDX_FIELD = "input_index"
 
 LEAF_FUNCTION = "<Atom>"
-NONLEAF_TOKEN = "<Function>"
+UNARY_FUNCTIONS = {"cos", "csc", "tan", "sec", "cot", "sin"}
+BINARY_FUNCTIONS = {"Mul", "Add", "Pow"}
+EQUALITY_FUNCTION = "Equality"
 
-ROOT_INPUT_IDX = -1
-LEFT_INPUT_IDX = 0
-RIGHT_INPUT_IDX = 1
+NONLEAF_TOKEN = "<Function>"
 
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)
@@ -138,24 +134,18 @@ def _deserialize_binary_recurse(
     graph.add_nodes(1)
 
     if root_idx == 0:  # Leaf node
-        graph.ndata[FUNCTION_FIELD] = torch.tensor([function_id], dtype=torch.int32)
-        graph.ndata[TOKEN_FIELD] = torch.tensor([token_id], dtype=torch.int32)
-        graph.ndata[INPUT_IDX_FIELD] = torch.tensor([ROOT_INPUT_IDX], dtype=torch.int32)
+        graph.ndata[FUNCTION_FIELD] = torch.tensor([function_id], dtype=torch.int64)
+        graph.ndata[TOKEN_FIELD] = torch.tensor([token_id], dtype=torch.int64)
     else:
         if left_subgraph.num_nodes() == 0:  # Right-unary
             graph.add_edges(right_root_idx, root_idx)
-            graph.ndata[INPUT_IDX_FIELD][right_root_idx] = RIGHT_INPUT_IDX
         elif right_subgraph.num_nodes() == 0:  # Left-unary
             graph.add_edges(left_root_idx, root_idx)
-            graph.ndata[INPUT_IDX_FIELD][left_root_idx] = LEFT_INPUT_IDX
         else:  # Binary
             graph.add_edges([left_root_idx, right_root_idx], root_idx)
-            graph.ndata[INPUT_IDX_FIELD][right_root_idx] = RIGHT_INPUT_IDX
-            graph.ndata[INPUT_IDX_FIELD][left_root_idx] = LEFT_INPUT_IDX
 
         graph.ndata[FUNCTION_FIELD][-1] = function_id
         graph.ndata[TOKEN_FIELD][-1] = token_id
-        graph.ndata[INPUT_IDX_FIELD][-1] = ROOT_INPUT_IDX
 
     return graph
 
@@ -210,17 +200,13 @@ def plot_graph(
     token_names = {idx: name for name, idx in token_vocab.items()}
 
     labels = {}
-    for i, (function_id, token_id, input_idx) in enumerate(
-        zip(
-            graph.ndata[FUNCTION_FIELD].numpy(),
-            graph.ndata[TOKEN_FIELD].numpy(),
-            graph.ndata[INPUT_IDX_FIELD].numpy(),
-        )
+    for i, (function_id, token_id) in enumerate(
+        zip(graph.ndata[FUNCTION_FIELD].numpy(), graph.ndata[TOKEN_FIELD].numpy(),)
     ):
         if function_names[function_id] == LEAF_FUNCTION:
-            labels[i] = f"{token_names[token_id]} [{input_idx}]"
+            labels[i] = f"{token_names[token_id]}"
         else:
-            labels[i] = f"{function_names[function_id]} [{input_idx}]"
+            labels[i] = f"{function_names[function_id]}"
 
     nx_graph = graph.to_networkx()
     positions = nx.nx_agraph.graphviz_layout(nx_graph, prog="dot")
@@ -228,7 +214,7 @@ def plot_graph(
     nx.draw_networkx_labels(nx_graph, positions, labels)
 
     plt.axis("off")
-    plt.show()
+    plt.show(block=False)
 
 
 def typed_topological_nodes_generator(graph: dgl.DGLGraph) -> List[torch.Tensor]:
@@ -363,6 +349,9 @@ class EquationTreeDataModule(pl.LightningDataModule):
         Whether to pin GPU memory.
     """
 
+    function_vocab: Dict[str, int]
+    token_vocab: Dict[str, int]
+
     train_dataset: Optional[_EquationTreeDataset] = None
     val_dataset: Optional[_EquationTreeDataset] = None
     test_dataset: Optional[_EquationTreeDataset] = None
@@ -404,15 +393,15 @@ class EquationTreeDataModule(pl.LightningDataModule):
         self.val_path = val_path
         self.test_path = test_path
 
-        self.function_vocab = function_vocab
-        self.token_vocab = token_vocab
+        self._function_vocab = function_vocab
+        self._token_vocab = token_vocab
 
         self.batch_size = batch_size
         self.num_data_workers = num_data_workers
         self.pin_memory = pin_memory
 
     def setup(self, stage: Optional[str] = None):
-        build_vocab = not self.function_vocab
+        build_vocab = not self._function_vocab
         all_data_raw = []
 
         if self.train_path:
@@ -441,7 +430,9 @@ class EquationTreeDataModule(pl.LightningDataModule):
             )
             del all_data_raw
         else:
-            assert self.function_vocab and self.token_vocab
+            assert self._function_vocab and self._token_vocab
+            self.function_vocab = self._function_vocab
+            self.token_vocab = self._token_vocab
             _logger.info(
                 f"Loaded vocabularies with {len(self.function_vocab)} functions and "
                 f"{len(self.token_vocab)} tokens."
