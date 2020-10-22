@@ -1,5 +1,6 @@
 ### Project
 poetry.lock
+lightning_logs/
 
 ### Vim
 # Swap
