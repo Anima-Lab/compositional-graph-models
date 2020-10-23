@@ -239,7 +239,7 @@ def typed_topological_nodes_generator(graph: dgl.DGLGraph) -> List[torch.Tensor]
         The i-th element in this list is a tensor consisting of the nodes to visit
         at step i. The union of these lists is exactly the node indices of `graph`.
     """
-    visited = torch.zeros(graph.num_nodes(), dtype=torch.bool)
+    visited = torch.zeros(graph.num_nodes(), dtype=torch.bool, device=graph.device)
     remaining_dependencies = graph.in_degrees()
     order: List[torch.Tensor] = []
 

@@ -10,7 +10,7 @@ import dgl
 import pytorch_lightning as pl
 import torch
 
-import data
+from compositional_graph_models import data
 
 
 class UnaryFunctionModule(torch.nn.Module):
@@ -138,21 +138,6 @@ class TreeRNN(pl.LightningModule):
         function_idx = nodes.data[data.FUNCTION_FIELD][0].item()
         return self.hparams.function_vocab_inverse[function_idx]
 
-    def _embed_nodes(self, nodes):
-        """
-        An "apply_node_func" for embedding leaf nodes. Does nothing to non-leaf nodes.
-        """
-        function_type = self._nodes_function_type(nodes)
-
-        if function_type == data.LEAF_FUNCTION:
-            embeddings = self.token_embedding(nodes.data[data.TOKEN_FIELD])
-            return {"embed": embeddings}
-
-        if function_type == data.EQUALITY_FUNCTION:
-            return {"logits": nodes.data["logits"]}
-
-        return {"embed": nodes.data["embed"]}
-
     def _reduce_func(self, nodes):
         """
         A "reduce_func" for receiving messages from children and computing activations.
@@ -188,12 +173,16 @@ class TreeRNN(pl.LightningModule):
         for each tree in the forest.
         """
         node_order = data.typed_topological_nodes_generator(forest)
+
+        # Precompute embeddings at the leaves
+        forest.ndata["embed"] = self.token_embedding(forest.ndata[data.TOKEN_FIELD])
+
         dgl.prop_nodes(
             forest,
             node_order,
             message_func=dgl.function.copy_src("embed", "embed"),
             reduce_func=self._reduce_func,
-            apply_node_func=self._embed_nodes,
+            apply_node_func=None,
         )
         root_mask = (
             forest.ndata[data.FUNCTION_FIELD]
