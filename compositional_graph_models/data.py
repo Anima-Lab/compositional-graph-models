@@ -33,6 +33,8 @@ EQUALITY_FUNCTION = "Equality"
 
 NONLEAF_TOKEN = "<Function>"
 
+INDEX_PLACEHOLDER = -1
+
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)
 
@@ -217,7 +219,9 @@ def plot_graph(
     plt.show(block=False)
 
 
-def typed_topological_nodes_generator(graph: dgl.DGLGraph) -> List[torch.Tensor]:
+def typed_topological_nodes_generator(
+    graph: dgl.DGLGraph, node_mask: Optional[torch.Tensor] = None
+) -> List[torch.Tensor]:
     """
     Generates a topological traversal for the nodes of `graph`, guaranteeing the
     following two properties:
@@ -232,6 +236,9 @@ def typed_topological_nodes_generator(graph: dgl.DGLGraph) -> List[torch.Tensor]
     graph
         The graph whose nodes to traverse. May have multiple independent graphs
         packaged together with `dgl.batch()`.
+    node_mask
+        If provided, any node with a 0 in this mask is ignored.
+        Must be a bool tensor or None.
 
     Returns
     -------
@@ -242,6 +249,15 @@ def typed_topological_nodes_generator(graph: dgl.DGLGraph) -> List[torch.Tensor]
     visited = torch.zeros(graph.num_nodes(), dtype=torch.bool, device=graph.device)
     remaining_dependencies = graph.in_degrees()
     order: List[torch.Tensor] = []
+
+    if node_mask is not None:
+        opposite_mask = ~node_mask
+        visited |= opposite_mask
+        remaining_dependencies *= node_mask
+        (opposite_indices,) = torch.nonzero(opposite_mask, as_tuple=True)
+        _, masked_successors = graph.out_edges(opposite_indices)
+        visit_counts = torch.bincount(masked_successors, minlength=graph.num_nodes())
+        remaining_dependencies -= visit_counts
 
     while not visited.all():
         # Find unvisited nodes with no unfulfilled dependencies
@@ -265,6 +281,55 @@ def typed_topological_nodes_generator(graph: dgl.DGLGraph) -> List[torch.Tensor]
         remaining_dependencies -= visit_counts
 
     return order
+
+
+def tensorize_predecessors(graph: dgl.DGLGraph) -> torch.Tensor:
+    """
+    Given a DAG G, produce a tensor `index` of shape [N, D] where:
+        - N is the number of nodes in G
+        - D is the maximum in-degree in G
+        - index[n, i] is the i-th predecessor of node n, or -1 if none exists.
+
+    Note that this should work for non-binary graphs.
+
+    Parameters
+    ----------
+    graph
+        A directed acyclic graph, as a homogeneous DGLGraph.
+
+    Returns
+    -------
+    torch.Tensor
+        The tensor `index` described above.
+    """
+    src, dst = graph.edges()
+
+    # Assume edges are in increasing order; count the number of children for each node
+    dst_unique, dst_count = dst.unique_consecutive(return_counts=True)
+    dst_count = dst_count.cpu()
+
+    # Partition the source nodes according to their destination node;
+    # produces a list of tensors, where the i-th tensor is the children of node i
+    src_partition = src.split(list(dst_count))
+
+    # Create a dense tensor from src_partition with a placeholder for any node that
+    # doesn't have a full set of children. This is `index` without any degree-0 nodes.
+    partition_padded = torch.nn.utils.rnn.pad_sequence(
+        src_partition, padding_value=INDEX_PLACEHOLDER, batch_first=True
+    )
+
+    max_in_degree = dst_count.max().item()
+    index = torch.full(
+        (graph.num_nodes(), max_in_degree),
+        INDEX_PLACEHOLDER,
+        dtype=torch.int64,
+        device=graph.device,
+    )
+
+    # Write any rows for nodes having children into the index
+    index[dst_unique] = partition_padded
+
+    return index
 
 
 class _EquationTreeDataset(torch.utils.data.Dataset):
