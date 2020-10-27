@@ -1,11 +1,11 @@
 trainer:
-  gpus: 0
-  max_epochs: 16
+  gpus: 1
+  max_epochs: 64
   gradient_clip_val: 1.0
 
 data:
-  train_path: "data/equation_verification/40k_1_to_3_train.json"
-  val_path: "data/equation_verification/40k_1_to_3_val.json"
+  train_path: "data/equation_verification/40k_train.json"
+  val_path: "data/equation_verification/40k_val_shallow.json"
   batch_size: 128
 
 defaults:
