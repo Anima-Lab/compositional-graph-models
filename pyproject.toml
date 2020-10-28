@@ -20,6 +20,7 @@ torch = {url = "https://download.pytorch.org/whl/cu101/torch-1.6.0%2Bcu101-cp38-
 
 [tool.poetry.scripts]
 train = 'compositional_graph_models.train:main'
+evaluate = 'compositional_graph_models.evaluation:main'
 
 [build-system]
 requires = ["poetry>=0.12"]

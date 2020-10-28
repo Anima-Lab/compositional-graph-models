@@ -1,0 +1,9 @@
+data_path: ???
+checkpoint_path: ???
+model_class: compositional_graph_models.models.TreeRNN
+
+trainer:
+  gpus: 1
+
+data:
+  batch_size: 128

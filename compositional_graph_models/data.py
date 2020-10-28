@@ -332,6 +332,13 @@ def tensorize_predecessors(graph: dgl.DGLGraph) -> torch.Tensor:
     return index
 
 
+def tree_depth(tree: dgl.DGLGraph) -> int:
+    """
+    Compute the maximum distance from a leaf to the root.
+    """
+    return len(dgl.topological_nodes_generator(tree)) - 1
+
+
 class _EquationTreeDataset(torch.utils.data.Dataset):
     """
     A Dataset of equation trees and their labels.

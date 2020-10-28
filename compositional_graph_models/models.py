@@ -124,7 +124,9 @@ class RecursiveNN(pl.LightningModule, abc.ABC):
 
         self.train_acc_metric = pl.metrics.Accuracy()
         self.val_acc_metric = pl.metrics.Accuracy()
-        self.test_acc_metric = pl.metrics.Accuracy()
+
+        # Populated at test-time
+        self.test_metrics: Dict[int, Dict[str, pl.metrics.Metric]] = {}
 
     @abc.abstractmethod
     def _compute_output(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -272,16 +274,34 @@ class RecursiveNN(pl.LightningModule, abc.ABC):
         # https://pytorch-lightning.readthedocs.io/en/latest/logging.html#pytorch_lightning.loggers.tensorboard.TensorBoardLogger.params.default_hp_metric
         self.log("hp_metric", self.val_acc_metric, on_step=False, on_epoch=True)
 
+    @staticmethod
+    def _make_test_metrics():
+        return {
+            "accuracy": pl.metrics.classification.Accuracy(),
+            "precision": pl.metrics.classification.Precision(),
+            "recall": pl.metrics.classification.Recall(),
+            "f1": pl.metrics.classification.Fbeta(beta=1.0),
+        }
+
     def test_step(self, batch, batch_idx) -> None:
         forest, labels = batch
         logits = self(forest)
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(
-            input=logits, target=labels
-        )
-        self.test_acc_metric(logits, labels)
 
-        self.log("loss/val", loss, on_step=False, on_epoch=True)
-        self.log("accuracy/val", self.test_acc_metric, on_step=False, on_epoch=True)
+        for tree, logit, label in zip(dgl.unbatch(forest), logits, labels):
+            logit = logit.cpu()
+            label = label.cpu()
+            depth = data.tree_depth(tree)
+
+            if depth not in self.test_metrics.keys():
+                self.test_metrics[depth] = self._make_test_metrics()
+
+            for metric in self.test_metrics[depth].values():
+                metric(logit, label)
+
+    def test_epoch_end(self, _) -> None:
+        for depth, depth_metrics in self.test_metrics.items():
+            for name, metric in depth_metrics.items():
+                self.log(f"{name}/{depth}", metric.compute())
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
