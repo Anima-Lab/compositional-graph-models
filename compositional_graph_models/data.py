@@ -23,17 +23,24 @@ import pytorch_lightning as pl
 import torch
 
 
-FUNCTION_FIELD = "function"
-TOKEN_FIELD = "token"
+FUNCTION_FIELD = "function"  # The function at a (non-leaf) node
+TOKEN_FIELD = "token"  # The token at a (leaf) node
+SIDE_FIELD = "side"  # Whether a node is on the left, right, or root of an equation
 
 LEAF_FUNCTION = "<Atom>"
 UNARY_FUNCTIONS = {"cos", "csc", "tan", "sec", "cot", "sin"}
 BINARY_FUNCTIONS = {"Mul", "Add", "Pow"}
 EQUALITY_FUNCTION = "Equality"
+PAD_FUNCTION = "<Pad_F>"
 
 NONLEAF_TOKEN = "<Function>"
+PAD_TOKEN = "<Pad_T>"
 
 INDEX_PLACEHOLDER = -1
+
+SIDE_ROOT = 0
+SIDE_LEFT = 1
+SIDE_RIGHT = 2
 
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)
@@ -56,8 +63,8 @@ def build_vocabs(serialized_equations) -> Tuple[Dict[str, int], Dict[str, int]]:
     token_vocab : Dict[str, int]
         A vocabulary of variable and number symbols.
     """
-    functions: Set[str] = {LEAF_FUNCTION}
-    tokens: Set[str] = {NONLEAF_TOKEN}
+    functions: Set[str] = {PAD_FUNCTION, LEAF_FUNCTION}
+    tokens: Set[str] = {PAD_TOKEN, NONLEAF_TOKEN}
 
     for ex in serialized_equations:
         eq = ex["equation"]
@@ -132,12 +139,18 @@ def _deserialize_binary_recurse(
     right_root_idx = left_root_idx + right_subgraph.num_nodes()
     root_idx = right_root_idx + 1
 
+    if SIDE_FIELD in left_subgraph.ndata.keys():
+        left_subgraph.ndata[SIDE_FIELD][:] = SIDE_LEFT
+    if SIDE_FIELD in right_subgraph.ndata.keys():
+        right_subgraph.ndata[SIDE_FIELD][:] = SIDE_RIGHT
+
     graph = dgl.batch([left_subgraph, right_subgraph])
     graph.add_nodes(1)
 
     if root_idx == 0:  # Leaf node
         graph.ndata[FUNCTION_FIELD] = torch.tensor([function_id], dtype=torch.int64)
         graph.ndata[TOKEN_FIELD] = torch.tensor([token_id], dtype=torch.int64)
+        graph.ndata[SIDE_FIELD] = torch.tensor([SIDE_ROOT], dtype=torch.int64)
     else:
         if left_subgraph.num_nodes() == 0:  # Right-unary
             graph.add_edges(right_root_idx, root_idx)
@@ -148,6 +161,7 @@ def _deserialize_binary_recurse(
 
         graph.ndata[FUNCTION_FIELD][-1] = function_id
         graph.ndata[TOKEN_FIELD][-1] = token_id
+        graph.ndata[SIDE_FIELD][-1] = SIDE_ROOT
 
     return graph
 
@@ -210,6 +224,7 @@ def plot_graph(
         else:
             labels[i] = f"{function_names[function_id]}"
 
+    plt.subplots()
     nx_graph = graph.to_networkx()
     positions = nx.nx_agraph.graphviz_layout(nx_graph, prog="dot")
     nx.draw(nx_graph, positions, with_labels=False)
