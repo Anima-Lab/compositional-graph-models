@@ -1,5 +1,5 @@
 # @package _group_
-_target_: compositional_graph_models.models.TreeRNN
+_target_: models.TreeRNN
 d_model: 128
 num_module_layers: 2
 learning_rate: 1e-3

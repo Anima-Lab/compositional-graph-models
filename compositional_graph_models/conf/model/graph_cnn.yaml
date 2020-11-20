@@ -1,5 +1,5 @@
 # @package _group_
-_target_: compositional_graph_models.models.GraphCNN
+_target_: models.GraphCNN
 d_model: 64
 num_layers: 3
 num_module_layers: 2
