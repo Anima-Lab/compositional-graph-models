@@ -4,9 +4,9 @@ trainer:
   gradient_clip_val: 1.0
 
 data:
-  train_path: "data/equation_verification/40k_train.json"
-  val_path: "data/equation_verification/40k_val_shallow.json"
+  train_path: "../data/equation_verification/40k_1_to_2_val.json"
+  val_path: "../data/equation_verification/40k_1_to_2_val.json"
   batch_size: 64
 
 defaults:
- - model: graph_cnn
+ - model: tree_lstm

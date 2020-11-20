@@ -4,7 +4,7 @@ import hydra
 import omegaconf
 import pytorch_lightning as pl
 
-from compositional_graph_models import data, models
+import data, models
 
 _logger = logging.getLogger(__name__)
 
