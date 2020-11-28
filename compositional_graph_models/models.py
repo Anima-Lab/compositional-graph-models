@@ -7,6 +7,8 @@ Models are implemented using DGL. See `data.py` for graph format.
 import abc
 from typing import Callable, Dict, List, Tuple
 
+import argparse
+
 import dgl
 import dgl.nn
 import pytorch_lightning as pl
@@ -15,120 +17,8 @@ import torch_scatter
 
 import data
 
-
-class FunctionModule(torch.nn.Module):
-    """
-    An MLP block that takes in a fixed number of embedding vectors, and produces single
-    embedding vectors.
-
-    Parameters
-    ----------
-    arity
-        Number of (concatenated) embedding vectors to expect as input.
-    d_model
-        Dimensionality of the output. The input is expected to be twice this size.
-    num_layers
-        How many dense layers to apply.
-    """
-
-    def __init__(self, arity: int, d_model: int, num_layers: int):
-        if arity <= 0:
-            raise ValueError("A function module must take at least one input.")
-        if num_layers <= 0:
-            raise ValueError("A function module must have at least one layer.")
-
-        super().__init__()
-
-        layers: List[torch.nn.Module] = []
-        for _ in range(num_layers - 1):
-            layers.append(torch.nn.Linear(arity * d_model, arity * d_model))
-            layers.append(torch.nn.Tanh())
-        layers.append(torch.nn.Linear(arity * d_model, d_model))
-        layers.append(torch.nn.Tanh())
-        self.layer_stack = torch.nn.Sequential(*layers)
-
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.layer_stack(inputs)
-
-
-class UnaryLSTM(torch.nn.Module):
-    def __init__(self, d_model: int):
-        super().__init__()
-        self.data = torch.nn.Linear(d_model, d_model, bias=True)
-        self.forget = torch.nn.Linear(d_model, d_model, bias=True)
-        self.output = torch.nn.Linear(d_model, d_model, bias=True)
-        self.input = torch.nn.Linear(d_model, d_model, bias=True)
-
-    def forward(self, h: torch.Tensor, c: torch.Tensor, dropout=None):
-        """
-        Computes a forward pass of Unary LSTM node.
-        Args:
-            h: Hidden state of the children. Dim: [batch_size, d_model]
-            c: Cell state of the children. Dim: [batch_size, 1, d_model]
-
-        Returns:
-            (hidden, cell): Hidden state and cell state of parent. 
-            Hidden dim: [batch_size, d_model]. Cell dim: [batch_size, 1, d_model]
-        """
-        c = c.squeeze(1)
-        i = torch.sigmoid(self.data(h))
-        f = torch.sigmoid(self.forget(h))
-        o = torch.sigmoid(self.output(h))
-        u = torch.tanh(self.input(h))
-        if dropout is None:
-            cp = i * u + f * c
-        else:
-            cp = i * F.dropout(u,p=dropout,training=self.training) + f * c
-        hp = o * torch.tanh(cp)
-        return (hp, cp.unsqueeze(1))
-
-
-class BinaryLSTM(torch.nn.Module):
-
-    def __init__(self, d_model: int):
-        super().__init__()
-        self.data_left = torch.nn.Linear(d_model, d_model, bias=False)
-        self.data_right = torch.nn.Linear(d_model, d_model, bias=False)
-        self.data_bias = torch.nn.Parameter(torch.FloatTensor([0] * d_model))
-        self.forget_left_by_left = torch.nn.Linear(d_model, d_model, bias=False)
-        self.forget_left_by_right = torch.nn.Linear(d_model, d_model, bias=False)
-        self.forget_right_by_left = torch.nn.Linear(d_model, d_model, bias=False)
-        self.forget_right_by_right = torch.nn.Linear(d_model, d_model, bias=False)
-        self.forget_bias_left = torch.nn.Parameter(torch.FloatTensor([0] * d_model))
-        self.forget_bias_right = torch.nn.Parameter(torch.FloatTensor([0] * d_model))
-        self.output_left = torch.nn.Linear(d_model, d_model, bias=False)
-        self.output_right = torch.nn.Linear(d_model, d_model, bias=False)
-        self.output_bias = torch.nn.Parameter(torch.FloatTensor([0] * d_model))
-        self.input_left = torch.nn.Linear(d_model, d_model, bias=False)
-        self.input_right = torch.nn.Linear(d_model, d_model, bias=False)
-        self.input_bias = torch.nn.Parameter(torch.FloatTensor([0] * d_model))
-
-    def forward(self, hl, hr, cl, cr, dropout=None): 
-        """
-        Computes a forward pass of Binary LSTM node.
-        Args:
-            hl, hr: Hidden states of the children. Dim: [batch_size, d_model]
-            cl, cr: Cell states of the children. Dim: [batch_size, 1, d_model]
-
-        Returns:
-            (hp, cp): Hidden state and cell state of parent. 
-            Hidden dim: [batch_size, d_model]. Cell dim: [batch_size, 1, d_model]
-        """
-        cl = cl.squeeze(1)
-        cr = cr.squeeze(1)
-        i = torch.sigmoid(self.data_left(hl) + self.data_right(hr) + self.data_bias)
-        f_left = torch.sigmoid(self.forget_left_by_left(hl) + self.forget_left_by_right(hr) + self.forget_bias_left)
-        f_right = torch.sigmoid(self.forget_right_by_left(hl) + self.forget_right_by_right(hr) + self.forget_bias_right)
-        o = torch.sigmoid(self.output_left(hl) + self.output_right(hr) + self.output_bias)
-        u = torch.tanh(self.input_left(hl) + self.input_right(hr) + self.input_bias)
-        if dropout is None:
-            cp = i * u + f_left * cl + f_right * cr
-        else:
-            cp = i * F.dropout(u,p=dropout,training=self.training) + f_left * cl + f_right * cr
-        hp = o * torch.tanh(cp)
-        return (hp, cp.unsqueeze(1))
-
-
+from modules import FunctionModule, UnaryLSTM, BinaryLSTM, \
+                        UnarySMU, BinarySMU, UnaryStack, BinaryStack
 
 class GraphClassifier(pl.LightningModule, abc.ABC):
     """
@@ -457,10 +347,6 @@ class TreeLSTM(RecursiveNN):
 
     For full parameters, see the docstring for `RecursiveNN`.
 
-    Parameters
-    ----------
-    num_module_layers
-        How many layers to use for each internal module.
     """
 
     def __init__(
@@ -507,6 +393,99 @@ class TreeLSTM(RecursiveNN):
             l_memory = memory[:, 0, :]
             r_memory = memory[:, 1, :]
             return module(l_inputs, r_inputs, l_memory, r_memory)
+
+        assert False
+
+
+class TreeSMU(RecursiveNN):
+    """
+    A TreeSMU model.
+
+    For full parameters, see the docstring for `RecursiveNN`.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        stack_size: int,
+        learning_rate: float,
+        top_k: int,
+        like_LSTM: bool,
+        gate_top_k: bool,
+        gate_push_pop: bool,
+        normalize_action: bool,
+        no_pop: bool,
+        no_op: bool,
+        tree_activation: str,
+        stack_activation: str,
+        function_vocab: Dict[str, int],
+        token_vocab: Dict[str, int],
+    ):
+        self.save_hyperparameters()
+        p = argparse.ArgumentParser()
+        p.d_model = d_model
+        p.stack_size = stack_size
+        p.top_k = top_k
+        p.like_LSTM = like_LSTM
+        p.gate_top_k = gate_top_k
+        p.gate_push_pop = gate_push_pop
+        p.normalize_action = normalize_action
+        p.no_pop = no_pop
+        p.no_op = no_op
+        p.tree_activation = tree_activation
+        p.stack_activation = stack_activation
+        super().__init__(d_model, learning_rate, function_vocab, token_vocab)
+
+        self.unary_function_modules = torch.nn.ModuleDict(
+            {
+                f: UnarySMU(p)
+                for f in data.UNARY_FUNCTIONS
+            }
+        )
+        self.unary_stack_modules = torch.nn.ModuleDict(
+            {
+                f: UnaryStack(p)
+                for f in data.UNARY_FUNCTIONS
+            }
+        )
+        self.binary_function_modules = torch.nn.ModuleDict(
+            {
+                f: BinarySMU(p)
+                for f in data.BINARY_FUNCTIONS
+            }
+        )
+        self.binary_stack_modules = torch.nn.ModuleDict(
+            {
+                f: BinaryStack(p)
+                for f in data.BINARY_FUNCTIONS
+            }
+        )
+        self.output_bias = torch.nn.parameter.Parameter(torch.zeros(1))
+        self.memory_size = stack_size
+
+    def _compute_output(self, inputs: torch.Tensor) -> torch.Tensor:
+        logits = (inputs[:, 0, :] * inputs[:, 1, :]).sum(-1) + self.output_bias
+        return logits
+
+    def _apply_function(self, function_name: str, inputs: torch.Tensor, memory: torch.tensor) -> torch.Tensor:
+        if function_name in data.UNARY_FUNCTIONS:
+            module = self.unary_function_modules[function_name]
+            stack = self.unary_stack_modules[function_name]
+            inputs = inputs[:, 0, :]
+            memory = memory[:, 0, :]
+            step_memory = stack(inputs, memory)
+            return module(inputs, step_memory).squeeze(1), step_memory
+
+        if function_name in data.BINARY_FUNCTIONS:
+            # Concatenate left and right before function application
+            module = self.binary_function_modules[function_name]
+            stack = self.binary_stack_modules[function_name]
+            l_inputs = inputs[:, 0, :]
+            r_inputs = inputs[:, 1, :]
+            l_memory = memory[:, 0, :]
+            r_memory = memory[:, 1, :]
+            step_memory = stack(l_inputs, r_inputs, l_memory, r_memory)
+            return module(l_inputs, r_inputs, step_memory).squeeze(1), step_memory
 
         assert False
 

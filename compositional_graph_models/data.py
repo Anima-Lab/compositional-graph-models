@@ -15,6 +15,7 @@ import itertools as it
 import json
 import logging
 from typing import Dict, List, Optional, Set, Tuple
+import time
 
 import dgl
 import matplotlib.pyplot as plt
@@ -135,16 +136,18 @@ def _deserialize_binary_recurse(
         func, vars, function_vocab, token_vocab
     )
 
-    left_root_idx = left_subgraph.num_nodes() - 1
-    right_root_idx = left_root_idx + right_subgraph.num_nodes()
-    root_idx = right_root_idx + 1
+    right_root_idx = right_subgraph.num_nodes() - 1
+    left_root_idx = right_root_idx + left_subgraph.num_nodes()
+    root_idx = left_root_idx + 1
 
     if SIDE_FIELD in left_subgraph.ndata.keys():
         left_subgraph.ndata[SIDE_FIELD][:] = SIDE_LEFT
     if SIDE_FIELD in right_subgraph.ndata.keys():
         right_subgraph.ndata[SIDE_FIELD][:] = SIDE_RIGHT
 
-    graph = dgl.batch([left_subgraph, right_subgraph])
+    # Batch right child then left child. 
+    # This enforces the node_ids to be labeled in reverse preorder traversal.
+    graph = dgl.batch([right_subgraph, left_subgraph])
     graph.add_nodes(1)
 
     if root_idx == 0:  # Leaf node
@@ -157,7 +160,7 @@ def _deserialize_binary_recurse(
         elif right_subgraph.num_nodes() == 0:  # Left-unary
             graph.add_edges(left_root_idx, root_idx)
         else:  # Binary
-            graph.add_edges([left_root_idx, right_root_idx], root_idx)
+            graph.add_edges([right_root_idx, left_root_idx], root_idx)
 
         graph.ndata[FUNCTION_FIELD][-1] = function_id
         graph.ndata[TOKEN_FIELD][-1] = token_id
@@ -229,10 +232,9 @@ def plot_graph(
     positions = nx.nx_agraph.graphviz_layout(nx_graph, prog="dot")
     nx.draw(nx_graph, positions, with_labels=False)
     nx.draw_networkx_labels(nx_graph, positions, labels)
-
     plt.axis("off")
     plt.show(block=False)
-
+    plt.ion()
 
 def typed_topological_nodes_generator(
     graph: dgl.DGLGraph, node_mask: Optional[torch.Tensor] = None

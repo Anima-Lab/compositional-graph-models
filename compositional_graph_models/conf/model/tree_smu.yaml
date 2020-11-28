@@ -1,0 +1,14 @@
+# @package _group_
+_target_: models.TreeSMU
+d_model: 128
+stack_size: 5
+learning_rate: 1e-3
+top_k: 1
+gate_top_k: False
+gate_push_pop: True
+normalize_action: True
+no_op: True
+no_pop: False
+tree_activation: "sigmoid"
+stack_activation: "sigmoid"
+like_LSTM: False

@@ -9,4 +9,4 @@ data:
   batch_size: 64
 
 defaults:
- - model: tree_lstm
+ - model: tree_smu
